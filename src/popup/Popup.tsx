@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { getProfile, onProfileChanged, type Profile } from '../lib/profile';
-import { getSettings, onSettingsChanged, updateSettings, type Settings } from '../lib/settings';
-import { disabledHostFor, removeDisabledHost } from '../lib/host';
 import {
   getSavedJobs,
   addJob,
@@ -11,32 +9,26 @@ import {
   isJobTextTruncated,
   type SavedJob,
 } from '../lib/savedJobs';
-import { sendToBackground, sendToTab } from '../lib/messages';
-import type { AIResult, CapturedJob, FillResult, PageInfo } from '../lib/messages';
-import { downloadLetter } from '../lib/coverLetter';
-import { downloadResume } from '../lib/resume';
-import { signIn, reconcileAuthUser, onAuthChanged, type AuthUser } from '../lib/auth';
-import { canGenerateDocuments, saveJobNotice, fillNotice, timeAgo } from './notices';
+import { sendToTab } from '../lib/messages';
+import type { CapturedJob, PageInfo } from '../lib/messages';
+import type { FormProgress } from '../lib/formPlan';
+import { saveJobNotice, timeAgo } from './notices';
 import { SavedJobTextMeta } from './SavedJobTextMeta';
+import { PAGE_CONNECTION_MESSAGE, readPageInfo } from './pageConnection';
 
 export function Popup() {
   const [tabId, setTabId] = useState<number | null>(null);
   const [page, setPage] = useState<PageInfo | null>(null);
+  const [pageConnecting, setPageConnecting] = useState(true);
+  const [pageConnectionError, setPageConnectionError] = useState('');
+  const refreshVersion = useRef({ value: 0 });
   // AI config, derived from the profile, for the "configure AI" hints.
-  const [aiProvider, setAiProvider] = useState<Profile['ai']['provider']>('proxy');
   const [apiKeySet, setApiKeySet] = useState(false);
-  const [adminTokenSet, setAdminTokenSet] = useState(false);
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [signInBusy, setSignInBusy] = useState(false);
   const [fillMsg, setFillMsg] = useState('');
-  const [letter, setLetter] = useState('');
-  const [resume, setResume] = useState('');
-  const [busy, setBusy] = useState<'' | 'fill' | 'letter' | 'resume' | 'save'>('');
+  const [busy, setBusy] = useState<'' | 'fill' | 'save'>('');
   const [error, setError] = useState('');
-  const [scanEnabled, setScanEnabled] = useState(true);
-  const [disabledHosts, setDisabledHosts] = useState<string[]>([]);
-  const [coverLetterEnabled, setCoverLetterEnabled] = useState(true);
-  const [resumeEnabled, setResumeEnabled] = useState(true);
+  const [progress, setProgress] = useState<FormProgress | null>(null);
+  const currentTab = useRef<number | null>(null);
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobMutationPending, setJobMutationPending] = useState(false);
@@ -44,50 +36,7 @@ export function Popup() {
   // Which saved-job rows show their capture preview. Collapsed by default; the
   // user expands a row (chevron) to verify what text was captured for the AI.
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
-  // Editable company/role, shared by the cover letter + resume (pre-filled from
-  // page detection).
-  const [company, setCompany] = useState('');
-  const [role, setRole] = useState('');
   const fillMsgTimer = useRef<number | null>(null);
-const [copied, setCopied] = useState<'' | 'letter' | 'resume'>('');
-const copyTimer = useRef<number | null>(null);
-
-
-  // Persist a boolean feature toggle and reflect it locally.
-  async function toggleSetting(
-    key: 'scanEnabled' | 'coverLetterEnabled' | 'tailoredResumeEnabled',
-    setLocal: (v: boolean) => void,
-    value: boolean,
-  ) {
-    setLocal(value);
-    await updateSettings((prev) => ({ ...prev, [key]: value }));
-  }
-
-  /** "Turn back on" for the current site's per-site badge opt-out (see #272/#273). */
-  async function enableSite(host: string) {
-    setDisabledHosts((prev) => removeDisabledHost(prev, host));
-    await updateSettings((prev) => ({
-      ...prev,
-      disabledHosts: removeDisabledHost(prev.disabledHosts, host),
-    }));
-  }
-
-  async function copyToClipboard(text: string, target: 'letter' | 'resume') {
-    // Clear first, like every other handler here: without this a failed copy
-    // leaves its error on screen next to a later "✓ Copied!".
-    setError('');
-    try {
-      await navigator.clipboard.writeText(text);
-      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-      setCopied(target);
-      copyTimer.current = window.setTimeout(() => {
-        setCopied('');
-        copyTimer.current = null;
-      }, 1500);
-    } catch {
-      setError('Could not copy to clipboard. Select the text and copy manually.');
-    }
-  }
 
   function flashFillMsg(message: string) {
     if (fillMsgTimer.current !== null) {
@@ -112,70 +61,49 @@ const copyTimer = useRef<number | null>(null);
   // Re-read the active tab's job info. Runs on mount and whenever the user
   // switches tabs or navigates (the side panel stays open across all of that).
   async function refresh() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id) {
+    const version = ++refreshVersion.current.value;
+    setPageConnecting(true);
+    setPage(null);
+    setPageConnectionError('');
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (version !== refreshVersion.current.value) return;
+      if (!tab?.id) { setTabId(null); return; }
       setTabId(tab.id);
-      try {
-        const info = await sendToTab<PageInfo>(tab.id, { type: 'PAGE_INFO' });
-        setPage(info);
-        // Prefill from detection, but never clobber what the user has typed.
-        if (info.company) setCompany((c) => c || info.company);
-        if (info.role) setRole((r) => r || info.role);
-      } catch {
-        setPage({ supported: false, site: null, company: '', role: '', jobText: '', hostname: '' });
+      if (currentTab.current !== tab.id) { setProgress(null); setBusy(''); }
+      currentTab.current = tab.id;
+      const info = await readPageInfo(tab.id);
+      // A delayed reply from the previous tab must not disable the new tab.
+      if (version !== refreshVersion.current.value) return;
+      setPage(info);
+      if (info.supported) {
+        const status = await sendToTab<FormProgress | null>(tab.id, { type: 'PAGE_FILL_STATUS' }).catch(() => null);
+        if (version === refreshVersion.current.value && status?.type === 'FORM_PROGRESS') {
+          setProgress(status); setBusy(status.running ? 'fill' : '');
+        }
       }
-    } else {
-      setTabId(null);
-      setPage({ supported: false, site: null, company: '', role: '', jobText: '', hostname: '' });
+    } catch {
+      if (version === refreshVersion.current.value) setPageConnectionError(PAGE_CONNECTION_MESSAGE);
+    } finally {
+      if (version === refreshVersion.current.value) setPageConnecting(false);
     }
   }
 
-  // Feature toggles are stored settings (not tab-derived). Load once and keep in
-  // sync via storage changes, so a tab refresh can never clobber a fresh toggle
-  // mid-save (which made the checkboxes look like they did nothing).
-  useEffect(() => {
-    const apply = (s: Settings) => {
-      setScanEnabled(s.scanEnabled);
-      setDisabledHosts(s.disabledHosts);
-      setCoverLetterEnabled(s.coverLetterEnabled);
-      setResumeEnabled(s.tailoredResumeEnabled);
-    };
-    getSettings().then(apply);
-    return onSettingsChanged(apply);
-  }, []);
+  async function reloadJobPage() {
+    if (!tabId) return;
+    try { await chrome.tabs.reload(tabId); await refresh(); }
+    catch { setPageConnectionError('Could not reload this tab. Refresh the job page in Chrome, then try again.'); }
+  }
 
-  // The AI-configuration hints below are the only thing here that needs the
-  // profile itself, so they get their own subscription rather than dragging the
-  // whole record into the toggle path above (#347).
+  // Keep the API-key setup hint in sync with the profile settings.
   useEffect(() => {
     const apply = (p: Profile) => {
-      setAiProvider(p.ai.provider);
       setApiKeySet(!!p.ai.apiKey.trim());
-      setAdminTokenSet(!!p.ai.proxyToken.trim());
     };
     getProfile().then(apply);
     return onProfileChanged(apply);
   }, []);
 
-  // Google sign-in status for the managed proxy.
-  useEffect(() => {
-    reconcileAuthUser().then(setAuthUser);
-    return onAuthChanged(setAuthUser);
-  }, []);
-
-  async function onSignIn() {
-    setSignInBusy(true);
-    setError('');
-    try {
-      setAuthUser(await signIn());
-    } catch (e) {
-      setError(`Sign-in failed: ${(e as Error).message}`);
-    } finally {
-      setSignInBusy(false);
-    }
-  }
-
-  // Saved jobs live in their own store; load once and stay in sync.
   useEffect(() => {
     const apply = (s: { jobs: SavedJob[]; activeId: string | null }) => {
       setJobs(s.jobs);
@@ -186,18 +114,28 @@ const copyTimer = useRef<number | null>(null);
   }, []);
 
   useEffect(() => {
+    const pendingRefresh = refreshVersion.current;
     refresh();
     const onActivated = () => refresh();
     const onUpdated = (_id: number, change: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => {
-      if (tab.active && change.status === 'complete') refresh();
+      if (tab.active && change.status) refresh();
+    };
+    const onReady = (msg: { type?: string }, sender: chrome.runtime.MessageSender) => {
+      if (msg?.type === 'PAGE_READY') void refresh();
+      if (msg?.type === 'FORM_PROGRESS' && sender.tab?.id === currentTab.current) {
+        const status = msg as FormProgress;
+        setProgress(status); setBusy(status.running ? 'fill' : '');
+      }
     };
     chrome.tabs.onActivated.addListener(onActivated);
     chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.runtime.onMessage.addListener(onReady);
     return () => {
+      ++pendingRefresh.value;
       chrome.tabs.onActivated.removeListener(onActivated);
       chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.runtime.onMessage.removeListener(onReady);
       if (fillMsgTimer.current !== null) clearTimeout(fillMsgTimer.current);
-      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
     };
   }, []);
 
@@ -206,13 +144,19 @@ const copyTimer = useRef<number | null>(null);
     setBusy('fill');
     setFillMsg('');
     setError('');
+    const targetTab = tabId;
+    const requestId = crypto.randomUUID();
+    setProgress({ type: 'FORM_PROGRESS', requestId, running: true, phase: 'Connecting to this form…', filled: 0, total: 0, logs: [] });
     try {
-      const res = await sendToTab<FillResult>(tabId, { type: 'PAGE_FILL' });
-      flashFillMsg(fillNotice(res));
+      const res = await sendToTab<FormProgress>(tabId, { type: 'PAGE_FILL', requestId });
+      if (currentTab.current === targetTab) {
+        if (res?.type === 'FORM_PROGRESS') setProgress(res);
+        else { setProgress(null); setError(res?.error || 'No fill response. Reload the page and retry.'); }
+      }
     } catch {
-      setError('Could not reach the page. Reload the job page and try again.');
+      if (currentTab.current === targetTab) { setProgress(null); setError('Could not reach the page. Reload the job page and try again.'); }
     } finally {
-      setBusy('');
+      if (currentTab.current === targetTab) setBusy('');
     }
   }
 
@@ -262,46 +206,6 @@ const copyTimer = useRef<number | null>(null);
     }
   }
 
-  async function onCoverLetter() {
-    setBusy('letter');
-    setError('');
-    setLetter('');
-    try {
-      const res = await sendToBackground<AIResult>({
-        type: 'AI_GENERATE_COVER_LETTER',
-        company: company.trim(),
-        role: role.trim(),
-        jobText: page?.jobText ?? '',
-      });
-      if (res.error) setError(res.error);
-      else setLetter(res.text);
-    } catch (e) {
-      setError(`Generation failed: ${(e as Error).message}`);
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function onResume() {
-    setBusy('resume');
-    setError('');
-    setResume('');
-    try {
-      const res = await sendToBackground<AIResult>({
-        type: 'AI_GENERATE_RESUME',
-        company: company.trim(),
-        role: role.trim(),
-        jobText: page?.jobText ?? '',
-      });
-      if (res.error) setError(res.error);
-      else setResume(res.text);
-    } catch (e) {
-      setError(`Generation failed: ${(e as Error).message}`);
-    } finally {
-      setBusy('');
-    }
-  }
-
   async function onSaveJob() {
     if (!tabId || savedJobPending) return;
     setError('');
@@ -332,18 +236,8 @@ const copyTimer = useRef<number | null>(null);
   }
 
   const activeJob = jobs.find((j) => j.id === activeJobId) ?? null;
-  const canGenerate = canGenerateDocuments(company, role);
-  // page.hostname is '' when unknown or when an embedded ATS sub-frame answered
-  // PAGE_INFO instead of the top frame (see the PageInfo docblock) — disabledHostFor
-  // is unconditionally undefined for '', so this never shows a wrong-site notice.
-  // The matched ENTRY (not necessarily page.hostname itself — e.g. visiting
-  // sub.example.com when "example.com" is what's disabled) is what "Turn back
-  // on" has to remove; removing page.hostname there would silently no-op.
-  const siteDisabledEntry = disabledHostFor(page?.hostname ?? '', disabledHosts);
   const openOptions = () => chrome.runtime.openOptionsPage();
-  const geminiNeedsKey = aiProvider === 'gemini' && !apiKeySet;
-  // Proxy mode needs a signed-in account (unless the owner set an admin token).
-  const proxyNeedsSignIn = aiProvider === 'proxy' && !adminTokenSet && !authUser;
+  const openRouterNeedsKey = !apiKeySet;
 
   return (
     <div className="popup">
@@ -353,7 +247,7 @@ const copyTimer = useRef<number | null>(null);
         </span>
         <div className="brand-text">
           <h1>Little AI Helper</h1>
-          <p className="tagline">Autofill · cover letters · eligibility</p>
+          <p className="tagline">OpenRouter · free models</p>
         </div>
         <button
           className="ghost icon-btn"
@@ -365,53 +259,51 @@ const copyTimer = useRef<number | null>(null);
         </button>
       </header>
 
-      {page?.supported ? (
+      {pageConnecting ? (
+        <p className="muted" role="status">Connecting to the current page…</p>
+      ) : pageConnectionError ? (
+        <div className="block warn" role="status">
+          {pageConnectionError}
+          <button className="full" onClick={reloadJobPage} disabled={!tabId}>Reload job page</button>
+        </div>
+      ) : page?.supported ? (
         <p className="muted">
           <span className="pill">{page.site}</span>{' '}
           {page.role || 'job page'} {page.company && `· ${page.company}`}
         </p>
       ) : (
         <p className="muted">
-          Open a Greenhouse, Lever, Workday, or Ashby application page to use autofill.
+          Open an application form. AI can read standard fields and common dropdowns on different websites.
         </p>
       )}
 
-      {geminiNeedsKey && (
+      {openRouterNeedsKey && (
         <div className="block warn">
-          AI isn't configured yet.{' '}
+          Add your OpenRouter key to use AI.{' '}
           <a onClick={openOptions} style={{ cursor: 'pointer' }}>Set it up →</a>
         </div>
-      )}
-
-      {proxyNeedsSignIn && (
-        <div className="block signin">
-          <p className="signin-text">
-            Sign in to use the managed AI — free up to a daily limit per account.
-          </p>
-          <button className="primary full" disabled={signInBusy} onClick={onSignIn}>
-            {signInBusy ? 'Signing in…' : 'Sign in with Google'}
-          </button>
-          <a className="signin-alt" onClick={openOptions} style={{ cursor: 'pointer' }}>
-            or use your own Gemini key / on-device →
-          </a>
-        </div>
-      )}
-
-      {aiProvider === 'proxy' && authUser && (
-        <p className="muted signedin">
-          ✓ Signed in{authUser.email ? ` as ${authUser.email}` : ''}
-        </p>
       )}
 
       <div className="block">
         <button
           className="primary"
-          disabled={!page?.supported || busy !== ''}
+          disabled={!page?.supported || busy !== '' || openRouterNeedsKey}
           onClick={onFill}
-          aria-label={busy === 'fill' ? 'Filling page' : 'Fill this page with profile data'}
+          aria-label={busy === 'fill' ? 'Filling page' : 'Fill this page with AI'}
         >
-          {busy === 'fill' ? 'Filling…' : 'Fill this page'}
+          {busy === 'fill' ? <><span className="fill-spinner" aria-hidden="true" /> AI is filling…</> : 'Fill this page with AI'}
         </button>
+        <p className="muted fill-help">Sends your CV/profile and the complete loaded form structure to OpenRouter. Fills the current step, then checks the entered values.</p>
+        {progress && <div className="fill-progress" aria-live="polite" aria-busy={progress.running}>
+          <strong>{progress.phase}</strong>
+          <p>{progress.filled} filled · {progress.logs.filter(l => l.status === 'skipped').length} to review · {progress.total} fields on this step</p>
+          {progress.sent !== undefined && <p className="muted">{progress.sent} field groups sent as context{progress.pending ? ` · ${progress.pending} on other loaded steps` : ''}. Review answers before submitting.</p>}
+          {progress.error && <p className="error">{progress.error}</p>}
+          {progress.running && <button className="ghost" onClick={() => tabId && sendToTab(tabId, { type: 'PAGE_FILL_CANCEL' })}>Stop after current step</button>}
+          <details><summary>Debug messages ({progress.logs.length})</summary>
+            <ul className="fill-log">{progress.logs.map((log, i) => <li key={i} data-status={log.status}><b>{log.status === 'filled' ? '✓' : log.status === 'info' ? 'ℹ' : '–'} {log.label}</b><span>{log.message}</span></li>)}</ul>
+          </details>
+        </div>}
         {fillMsg && <div className="status">{fillMsg}</div>}
       </div>
 
@@ -426,7 +318,7 @@ const copyTimer = useRef<number | null>(null);
         </button>
         {activeJob ? (
             <div className="jobusing">
-              Using a saved job for AI answers &amp; documents.{' '}
+              Using a saved job for AI answers.{' '}
               <button className="ghost jobclear" disabled={savedJobPending} onClick={onUseCurrentPage}>
                 use current page
               </button>
@@ -448,7 +340,7 @@ const copyTimer = useRef<number | null>(null);
                     <button
                       className="jobpick"
                       disabled={savedJobPending}
-                      title="Use this posting as the context for AI answers & documents"
+                      title="Use this posting as the context for AI answers"
                       onClick={() => onPickJob(j.id)}
                       aria-label={`${j.id === activeJobId ? 'Stop using' : 'Use'} ${j.role || 'saved job'}${j.company ? ` at ${j.company}` : ''} as AI context`}
                     >
@@ -514,144 +406,7 @@ const copyTimer = useRef<number | null>(null);
         )}
       </div>
 
-      <div className="block">
-        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-          <input
-            style={{ flex: 1, minWidth: 0 }}
-            aria-label="Company"
-            placeholder="Company"
-            value={company}
-            onChange={(e) => setCompany(e.target.value)}
-          />
-          <input
-            style={{ flex: 1, minWidth: 0 }}
-            aria-label="Role"
-            placeholder="Role"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-          />
-        </div>
-
-        {!canGenerate && (
-          <div className="help" style={{ marginTop: 4 }}>
-            Enter a company and role above to generate a cover letter or tailored resume.
-          </div>
-        )}
-        <button
-          className="primary"
-          disabled={busy !== '' || !canGenerate}
-          onClick={onCoverLetter}
-          aria-label={busy === 'letter' ? 'Generating cover letter' : 'Generate cover letter'}
-        >
-          {busy === 'letter' ? 'Generating…' : 'Generate cover letter'}
-        </button>
-       
-        {letter && (
-  <>
-    <textarea
-      style={{ marginTop: 8 }}
-      aria-label="Generated cover letter"
-      value={letter}
-      onChange={(e) => setLetter(e.target.value)}
-    />
-    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-      <button
-        className="full"
-        style={{ flex: 1 }}
-        onClick={() => downloadLetter(letter, company, role)}
-      >
-        ⬇ Download cover letter (.pdf)
-      </button>
-      <button
-        className="full"
-        style={{ flex: 1 }}
-        onClick={() => copyToClipboard(letter, 'letter')}
-        aria-label="Copy cover letter to clipboard"
-      >
-        {copied === 'letter' ? '✓ Copied!' : '📋 Copy'}
-      </button>
-    </div>
-  </>
-)}
-        <button
-          className="primary"
-          style={{ marginTop: 8 }}
-          disabled={busy !== '' || !canGenerate}
-          onClick={onResume}
-          aria-label={busy === 'resume' ? 'Tailoring resume' : 'Generate tailored resume'}
-        >
-          {busy === 'resume' ? 'Tailoring…' : 'Generate tailored resume'}
-        </button>
-       {resume && (
-  <>
-    <textarea
-      style={{ marginTop: 8 }}
-      aria-label="Generated tailored resume"
-      value={resume}
-      onChange={(e) => setResume(e.target.value)}
-    />
-    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-      <button
-        className="full"
-        style={{ flex: 1 }}
-        onClick={() => downloadResume(resume, company, role)}
-      >
-        ⬇ Download resume (.pdf)
-      </button>
-      <button
-        className="full"
-        style={{ flex: 1 }}
-        onClick={() => copyToClipboard(resume, 'resume')}
-        aria-label="Copy resume to clipboard"
-      >
-        {copied === 'resume' ? '✓ Copied!' : '📋 Copy'}
-      </button>
-    </div>
-  </>
-)}
-      </div>
-
       {error && <div className="status warn">{error}</div>}
-
-      <div className="block toggles">
-        <p className="toggles-title">Show in the page badge</p>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={resumeEnabled}
-            onChange={(e) => toggleSetting('tailoredResumeEnabled', setResumeEnabled, e.target.checked)}
-          />
-          Tailored resume generator
-        </label>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={coverLetterEnabled}
-            onChange={(e) => toggleSetting('coverLetterEnabled', setCoverLetterEnabled, e.target.checked)}
-          />
-          Tailored cover-letter generator
-        </label>
-        <label className="toggle" style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-          <input
-            type="checkbox"
-            checked={scanEnabled}
-            onChange={(e) => toggleSetting('scanEnabled', setScanEnabled, e.target.checked)}
-          />
-          Scan every page for visa/eligibility (YES/NO badge)
-        </label>
-        {/* Gated on scanEnabled too: with the global switch already off, this
-            would be redundant noise on top of the unchecked box above, and
-            "Turn back on" would misleadingly imply it alone restores the
-            badge when the global toggle would still need re-checking. */}
-        {scanEnabled && siteDisabledEntry && (
-          <p className="warn" style={{ marginTop: 6 }}>
-            Badge turned off for <strong>{siteDisabledEntry}</strong>.{' '}
-            <button className="linklike" onClick={() => enableSite(siteDisabledEntry)}>
-              Turn back on
-            </button>
-          </p>
-        )}
-      </div>
 
       <div className="block" style={{ textAlign: 'center' }}>
         <button className="ghost" onClick={openOptions}>

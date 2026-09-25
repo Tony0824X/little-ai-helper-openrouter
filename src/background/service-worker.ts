@@ -1,37 +1,22 @@
 // Background service worker: the AI hub. It owns the provider, the API key, and
-// the cross-origin fetch, so content scripts and UI pages never touch them.
+// the cross-origin fetch for document and page requests. The settings page also
+// makes a synthetic connection-test request using the key currently being edited.
 // It handles AI_* messages and replies with an AIResult ({ text } or { error }).
 
 import { getProfile, profileToContext, type AISettings } from '../lib/profile';
 import { getActiveJob } from '../lib/savedJobs';
-import { getCachedToken } from '../lib/auth';
 import { getProvider, AIError, type AIProvider } from '../lib/ai';
 import {
   buildAnswerPrompt,
-  buildTailoredResumePrompt,
   buildResumeParsePrompt,
-  buildJobEligibilityPrompt,
 } from '../lib/ai/prompts';
-import { substitutePlaceholders } from '../lib/coverLetter';
 import type { AIResult, BackgroundMessage } from '../lib/messages';
+import { buildFormPrompt, FORM_LIMIT, unsupportedHistory, missingPersonalFact, groundPersonalAnswers, parseFormPlan } from '../lib/formPlan';
 
-// Builds the provider for a request. For the managed proxy the bearer is the
-// user's Google sign-in token (resolved silently) unless an admin token is set —
-// so a signed-out user gets a clear "sign in" prompt instead of a 401. Resolved
-// lazily, only in branches that hit the AI, so the no-AI cover-letter path still
-// works while signed out.
+type EnabledMessage = Extract<BackgroundMessage, { type: 'AI_GENERATE_ANSWER' | 'AI_PARSE_RESUME' | 'AI_FILL_FORM' }>;
+
+// The same selected free OpenRouter model handles every AI operation.
 async function resolveProvider(ai: AISettings): Promise<AIProvider> {
-  if (ai.provider === 'proxy' && !ai.proxyToken) {
-    let token: string;
-    try {
-      token = await getCachedToken();
-    } catch {
-      throw new AIError(
-        'Sign in to use the managed AI — open the extension to sign in, or pick another AI provider in options.',
-      );
-    }
-    return getProvider({ ...ai, proxyToken: token });
-  }
   return getProvider(ai);
 }
 
@@ -43,10 +28,8 @@ chrome.runtime.onMessage.addListener((msg: BackgroundMessage, sender, sendRespon
   // Only handle our AI messages; ignore content-targeted ones.
   if (
     msg?.type !== 'AI_GENERATE_ANSWER' &&
-    msg?.type !== 'AI_GENERATE_COVER_LETTER' &&
-    msg?.type !== 'AI_GENERATE_RESUME' &&
-    msg?.type !== 'AI_PARSE_RESUME' &&
-    msg?.type !== 'AI_ANALYZE_JOB'
+    msg?.type !== 'AI_FILL_FORM' &&
+    msg?.type !== 'AI_PARSE_RESUME'
   ) {
     return false;
   }
@@ -61,12 +44,35 @@ chrome.runtime.onMessage.addListener((msg: BackgroundMessage, sender, sendRespon
   return true; // keep the message channel open for the async response
 });
 
-async function handle(msg: BackgroundMessage): Promise<string> {
+async function handle(msg: EnabledMessage): Promise<string> {
   const profile = await getProfile();
   const context = profileToContext(profile);
 
+  if (msg.type === 'AI_FILL_FORM') {
+    if (!context.trim()) throw new AIError('Upload a CV or add your profile in Settings first.');
+    if (!Array.isArray(msg.fields) || !msg.fields.length || msg.fields.length > FORM_LIMIT || JSON.stringify(msg.fields).length > 500000) throw new AIError('This form is too large or invalid.');
+    const provider = await resolveProvider(profile.ai);
+    // Form filling always uses THIS page, not an unrelated active saved job.
+    const preferences = [
+      profile.preferences.workAuthorization && `Work authorisation: ${profile.preferences.workAuthorization}`,
+      profile.preferences.requiresSponsorship && `Requires sponsorship: ${profile.preferences.requiresSponsorship}`,
+      profile.preferences.salaryExpectation && `Expected salary: ${profile.preferences.salaryExpectation}`,
+    ].filter(Boolean).join('\n');
+    if (msg.document && (typeof msg.document.structure !== 'string' || msg.document.structure.length > 100000)) throw new AIError('Invalid form structure.');
+    const fields = msg.fields.map(f => {
+      const reason = unsupportedHistory(f, context) ? 'This personal history is not stated in the CV; answer manually.' : missingPersonalFact(f, context);
+      return reason ? { ...f, blocked: f.blocked || reason } : f;
+    });
+    const requested = new Set(msg.targetIds || fields.map(f => f.id));
+    const targets = fields.filter(f => requested.has(f.id) && !f.blocked && !f.hasValue && f.visible !== false);
+    // Every call includes the complete loaded form, even during a repair pass.
+    const raw = targets.length ? await provider.generate(buildFormPrompt(fields, `${context}\n${preferences}`, msg.jobText || '', msg.document, targets.map(f => f.id))) : '{"answers":[]}';
+    const plan = groundPersonalAnswers(parseFormPlan(raw, targets), fields, context);
+    return JSON.stringify({ answers: [...plan.answers, ...fields.filter(f => f.blocked && requested.has(f.id)).map(f => ({ id: f.id, value: '', reason: f.blocked }))] });
+  }
+
   if (
-    (msg.type === 'AI_GENERATE_ANSWER' || msg.type === 'AI_GENERATE_RESUME') &&
+    msg.type === 'AI_GENERATE_ANSWER' &&
       context.trim() === ''
   ) {
     throw new AIError('Your profile is empty — add your details in Options first.');
@@ -78,40 +84,17 @@ async function handle(msg: BackgroundMessage): Promise<string> {
     return provider.generate(buildResumeParsePrompt(msg.text));
   }
 
-  if (msg.type === 'AI_ANALYZE_JOB') {
-    // Returns raw JSON; the content script parses it via parseEligibilityJson.
-    const provider = await resolveProvider(profile.ai);
-    return provider.generate(buildJobEligibilityPrompt(msg.text));
-  }
-
   // The remaining handlers tailor to a job posting. A saved "active" job wins
   // over the live page's text/company/role, so tailoring survives a multi-page
   // application that has navigated away from the posting.
   const activeJob = await getActiveJob();
   const jobText = activeJob?.text || msg.jobText;
 
-  if (msg.type === 'AI_GENERATE_ANSWER') {
-    const provider = await resolveProvider(profile.ai);
-    // The free-text answer is the only feature that honors the user's model
-    // choice; everything else stays on the provider's fast default.
-    return provider.generate({
-      ...buildAnswerPrompt(msg.question, context, jobText),
-      model: profile.ai.model,
-    });
-  }
-
-  const company = msg.company.trim() || activeJob?.company || '';
-  const role = msg.role.trim() || activeJob?.role || '';
-
-  if (msg.type === 'AI_GENERATE_RESUME') {
-    const provider = await resolveProvider(profile.ai);
-    return provider.generate(buildTailoredResumePrompt(context, jobText, company, role));
-  }
-
-  // AI_GENERATE_COVER_LETTER — a straight placeholder fill ({{company}}, {{role}},
-  // {{date}}). The applicant's wording, including the opening paragraph, is kept
-  // verbatim; no AI rewrite. (No API key needed for this path.)
-  return substitutePlaceholders(profile.baseCoverLetter, { company, role });
+  const provider = await resolveProvider(profile.ai);
+  return provider.generate({
+    ...buildAnswerPrompt(msg.question, context, jobText),
+    model: profile.ai.model,
+  });
 }
 
 // Clicking the toolbar icon opens the side panel (which stays open until the

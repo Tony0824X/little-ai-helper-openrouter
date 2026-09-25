@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_MODEL, GEMINI_MODELS } from './ai/models';
+import { DEFAULT_OPENROUTER_MODEL as DEFAULT_MODEL, OPENROUTER_MODELS } from './ai/openrouterModels';
 import {
   CONTEXT_TEXT_BUDGET,
   DEFAULT_PROFILE,
@@ -121,7 +121,7 @@ describe('onProfileChanged', () => {
 
   it.each([
     ['unknown', 'gemini-2.0-flash', DEFAULT_MODEL],
-    ['known', GEMINI_MODELS[0].id, GEMINI_MODELS[0].id],
+    ['known', OPENROUTER_MODELS[1].id, OPENROUTER_MODELS[1].id],
   ])('normalizes a %s stored model', (_kind, storedModel, expectedModel) => {
     const callback = vi.fn();
     onProfileChanged(callback);
@@ -136,6 +136,20 @@ describe('onProfileChanged', () => {
         ai: { ...DEFAULT_PROFILE.ai, model: expectedModel },
       }),
     );
+  });
+
+  it.each(['gemini', 'proxy', 'onDevice'])('migrates %s without leaking old keys or losing resume data', (provider) => {
+    const callback = vi.fn();
+    onProfileChanged(callback);
+    emitStorageChange({ [STORAGE_KEY]: { newValue: {
+      personal: { firstName: 'Alex' }, resumeText: 'Synthetic resume',
+      ai: { provider, apiKey: 'old-provider-key', proxyToken: 'old-token', proxyUrl: 'https://old.example', model: 'gemini-2.5-pro' },
+    } } }, 'local');
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+      resumeText: 'Synthetic resume',
+      personal: expect.objectContaining({ firstName: 'Alex' }),
+      ai: { ...DEFAULT_PROFILE.ai, apiKey: '', proxyToken: '', proxyUrl: '' },
+    }));
   });
 });
 

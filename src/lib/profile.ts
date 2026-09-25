@@ -2,7 +2,7 @@
 // Everything here stays on the user's machine (storage.local, not sync) because
 // it contains PII (resume text, contact info, optional demographics).
 
-import { DEFAULT_MODEL, isKnownModel } from './ai/models';
+import { DEFAULT_OPENROUTER_MODEL as DEFAULT_MODEL, isOpenRouterModel as isKnownModel } from './ai/openrouterModels';
 
 export interface PersonalInfo {
   firstName: string;
@@ -99,7 +99,8 @@ export interface Preferences {
   disabilityStatus: string;
 }
 
-export type AIProviderId = 'gemini' | 'onDevice' | 'proxy';
+// Legacy values remain readable so saved profiles can migrate without losing resume data.
+export type AIProviderId = 'openrouter' | 'gemini' | 'onDevice' | 'proxy';
 
 export interface AISettings {
   provider: AIProviderId;
@@ -167,14 +168,10 @@ export const DEFAULT_PROFILE: Profile = {
     '[Write a couple of sentences about why you are a great fit.]\n\n' +
     'Sincerely,\n[Your Name]',
   ai: {
-    // Defaults to the managed proxy (Vertex AI via Cloud Run). The URL is
-    // pre-filled; users sign in with Google (the proxy meters per user), so no
-    // secret is baked into the source. proxyToken stays blank — it's only for the
-    // proxy owner's admin override.
-    provider: 'proxy',
+    provider: 'openrouter',
     apiKey: '',
     model: DEFAULT_MODEL,
-    proxyUrl: 'https://job-autofill-proxy-rz75fufhtq-uc.a.run.app/generate',
+    proxyUrl: '',
     proxyToken: '',
   },
 };
@@ -199,9 +196,13 @@ const STORAGE_KEY = PROFILE_STORAGE_KEY;
 function withDefaults(stored: Partial<Profile> | undefined): Profile {
   if (!stored) return structuredClone(DEFAULT_PROFILE);
   const ai = { ...DEFAULT_PROFILE.ai, ...stored.ai };
-  // Old/hand-typed model ids (e.g. the previous gemini-2.0-flash default) may not
-  // be in the curated dropdown — snap them to the default so the picker is never
-  // blank and the proxy never gets an unknown id.
+  // Keep profile data, but never forward another provider's credentials to OpenRouter.
+  if (ai.provider !== 'openrouter') {
+    ai.provider = 'openrouter';
+    ai.apiKey = '';
+  }
+  ai.proxyUrl = '';
+  ai.proxyToken = '';
   if (!isKnownModel(ai.model)) ai.model = DEFAULT_MODEL;
   return {
     ...DEFAULT_PROFILE,

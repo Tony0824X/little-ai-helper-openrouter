@@ -1,25 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Field } from './Field';
-import { DisabledSites } from './DisabledSites';
 import {
   computeContextUsage,
+  saveProfile,
   shadowedByLaterUpload,
   upsertDocument,
   type EducationEntry,
   type Profile,
   type WorkEntry,
 } from '../lib/profile';
-import { removeDisabledHost } from '../lib/host';
-import { getSettings, onSettingsChanged, updateSettings, type Settings } from '../lib/settings';
 import { useProfile } from '../ui/useProfile';
 import { extractText, extractTextBatch } from '../lib/documents';
 import { sendToBackground } from '../lib/messages';
 import type { AIResult } from '../lib/messages';
-import { parseResumeJson } from '../lib/resumeImport';
-import { ProxyProvider } from '../lib/ai/proxy';
-import { GEMINI_MODELS } from '../lib/ai/models';
-import { AIError, isOnDeviceAvailable, onDeviceAvailabilityMessage } from '../lib/ai';
-import { signIn, signOut, reconcileAuthUser, onAuthChanged, getCachedToken, type AuthUser } from '../lib/auth';
+import { mergeResumeProfile, parseResumeJson } from '../lib/resumeImport';
+import { OpenRouterProvider } from '../lib/ai/openrouter';
+import { OPENROUTER_MODELS } from '../lib/ai/openrouterModels';
+import { AIError } from '../lib/ai';
 
 export function Options() {
   const { profile, loaded, saveState, saveError, update } = useProfile();
@@ -71,14 +68,12 @@ function OptionsView({
   });
   // Snapshot of the profile taken right before the last import, for undo.
   const [undoSnapshot, setUndoSnapshot] = useState<Profile | null>(null);
-  const [proxyTest, setProxyTest] = useState<{ busy: boolean; msg: string; err: string }>({
+  const [connectionTest, setConnectionTest] = useState<{ busy: boolean; msg: string; err: string }>({
     busy: false,
     msg: '',
     err: '',
   });
   const [showApiKey, setShowApiKey] = useState(false);
-  const [showProxyToken, setShowProxyToken] = useState(false);
-  const [onDeviceAvailable, setOnDeviceAvailable] = useState<boolean | null>(null);
 
   // Which uploaded documents have their "exact text sent to the AI" preview open.
   const [expandedDocs, setExpandedDocs] = useState<Set<string>>(new Set());
@@ -96,86 +91,21 @@ function OptionsView({
     [contextUsage],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    setOnDeviceAvailable(null);
-    if (p.ai.provider === 'onDevice') {
-      isOnDeviceAvailable().then((available) => {
-        if (!cancelled) setOnDeviceAvailable(available);
-      });
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [p.ai.provider]);
-
-  // The per-site badge opt-outs are settings, not profile fields (#347), so they
-  // load and save independently of the debounced profile editor around them.
-  const [disabledHosts, setDisabledHosts] = useState<string[]>([]);
-  useEffect(() => {
-    const apply = (s: Settings) => setDisabledHosts(s.disabledHosts);
-    getSettings().then(apply);
-    return onSettingsChanged(apply);
-  }, []);
-
-  // Google sign-in state for the managed proxy.
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authErr, setAuthErr] = useState('');
-  useEffect(() => {
-    reconcileAuthUser().then(setAuthUser);
-    return onAuthChanged(setAuthUser);
-  }, []);
-
-  async function doSignIn(): Promise<void> {
-    setAuthBusy(true);
-    setAuthErr('');
+  async function testConnection(): Promise<void> {
+    setConnectionTest({ busy: true, msg: '', err: '' });
     try {
-      setAuthUser(await signIn());
-    } catch (e) {
-      setAuthErr((e as Error).message || 'Sign-in failed');
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function doSignOut(): Promise<void> {
-    setAuthBusy(true);
-    try {
-      await signOut();
-      setAuthUser(null);
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  /** Pings the configured proxy with a tiny prompt to verify URL + token. */
-  async function testProxy(): Promise<void> {
-    setProxyTest({ busy: true, msg: '', err: '' });
-    try {
-      // Admin token if set; otherwise the signed-in user's Google token.
-      let token = p.ai.proxyToken;
-      if (!token) {
-        try {
-          token = await getCachedToken();
-        } catch {
-          throw new AIError('Sign in with Google first (or paste an admin token).');
-        }
-      }
-      // Connectivity test only — runs on the fast default model.
-      const provider = new ProxyProvider(p.ai.proxyUrl, token);
-      const text = await provider.generate({
-        system: 'You are a connectivity test. Reply with exactly: OK',
+      const text = await new OpenRouterProvider(p.ai.apiKey, p.ai.model).generate({
+        system: 'You are a connectivity test. Reply with exactly OK.',
         prompt: 'Reply with OK.',
         maxOutputTokens: 64,
       });
-      setProxyTest({ busy: false, err: '', msg: `Connected ✓ (model replied: "${text.slice(0, 30)}")` });
+      setConnectionTest({ busy: false, err: '', msg: `Connected ✓ (${p.ai.model}: ${text.slice(0, 40)})` });
     } catch (e) {
-      setProxyTest({ busy: false, msg: '', err: e instanceof AIError ? e.message : (e as Error).message });
+      setConnectionTest({ busy: false, msg: '', err: e instanceof AIError ? e.message : 'Connection test failed.' });
     }
   }
 
-  /** Sends resume text to the AI and fills work / education / skills. */
+  /** Extracts personal details, work, education, skills and stated preferences. */
   async function importFromResume(text: string): Promise<void> {
     if (!text.trim()) {
       setImportState({ busy: false, msg: '', err: 'Add some resume text first.' });
@@ -183,6 +113,9 @@ function OptionsView({
     }
     setImportState({ busy: true, msg: '', err: '' });
     try {
+      // Settings auto-save after 500 ms. A quick upload immediately after
+      // entering a key must not send the background worker an older profile.
+      await saveProfile({ ...p, resumeText: text });
       const res = await sendToBackground<AIResult>({ type: 'AI_PARSE_RESUME', text });
       if (res.error) {
         setImportState({ busy: false, msg: '', err: res.error });
@@ -192,18 +125,11 @@ function OptionsView({
       const personalCount = Object.keys(parsed.personal).length;
       // Capture the pre-import profile so the user can undo a bad parse.
       setUndoSnapshot(structuredClone(p));
-      update((prev) => ({
-        ...prev,
-        // Merge personal so found fields fill in without clobbering existing ones.
-        personal: { ...prev.personal, ...parsed.personal },
-        workHistory: parsed.work.length ? parsed.work : prev.workHistory,
-        education: parsed.education.length ? parsed.education : prev.education,
-        skills: parsed.skills.length ? parsed.skills : prev.skills,
-      }));
+      update((prev) => mergeResumeProfile(prev, parsed, p));
       setImportState({
         busy: false,
         err: '',
-        msg: `Imported ${personalCount} personal field(s), ${parsed.work.length} role(s), ${parsed.education.length} education entr(ies), ${parsed.skills.length} skill(s).`,
+        msg: `Imported ${personalCount} personal field(s), ${parsed.work.length} role(s), ${parsed.education.length} education entr(ies), ${parsed.skills.length} skill(s). Found ${Object.keys(parsed.preferences).length} preference(s); missing facts and new edits are preserved.`,
       });
     } catch (e) {
       setImportState({ busy: false, msg: '', err: (e as Error).message });
@@ -221,144 +147,49 @@ function OptionsView({
   return (
     <div className="options">
       <div className="toolbar">
-        <h1 style={{ flex: 1 }}>Little AI Helper — Settings</h1>
+        <h1 style={{ flex: 1 }}>Little AI Helper — OpenRouter Settings</h1>
         {saveState === 'saving' && <span className="help">Saving…</span>}
         {saveState === 'saved' && <span className="saved">✓ Saved</span>}
         {saveState === 'error' && saveError && <span className="warn">{saveError}</span>}
       </div>
       <p className="sub">
-        Everything here stays on this device (local storage). Your API key is only sent to your
-        chosen AI provider.
+        Your profile is saved on this device. When you use AI, relevant resume, document, and
+        job text is sent to OpenRouter and the model provider. Your key is sent only to OpenRouter.
       </p>
 
-      {/* AI provider */}
       <section className="card">
-        <h2>AI provider</h2>
-        <div className="row">
-          <Field label="Provider">
-            <select value={p.ai.provider} onChange={(e) => setAI('provider', e.target.value)}>
-              <option value="gemini">Google Gemini (bring your own free key)</option>
-              <option value="proxy">Managed proxy (Vertex AI via Cloud Run)</option>
-              <option value="onDevice">On-device (Chrome built-in, no key)</option>
-            </select>
-          </Field>
-          {/* On-device (Gemini Nano) has no model choice, so hide the picker. */}
-          {p.ai.provider !== 'onDevice' && (
-            <Field label="Model (for AI answers)">
-              <select value={p.ai.model} onChange={(e) => setAI('model', e.target.value)}>
-                {GEMINI_MODELS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-              <div className="help">
-                Used only for ✨ AI answers to open-ended questions. Resume parsing and the
-                eligibility badge always use the fast default model.
-              </div>
-            </Field>
-          )}
-        </div>
-        {p.ai.provider === 'onDevice' && onDeviceAvailable !== null && (
-          <div className={onDeviceAvailable ? 'saved' : 'warn'}>
-            {onDeviceAvailabilityMessage(onDeviceAvailable)}
+        <h2>OpenRouter · Free models</h2>
+        <p className="help">Use your own OpenRouter key. No Google sign-in or separate server is needed.</p>
+        <Field label="Free model (used for every AI feature)">
+          <select value={p.ai.model} onChange={(e) => setAI('model', e.target.value)}>
+            {OPENROUTER_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+          <div className="help">Dots3-Note Preview passed live connection and Chinese resume JSON tests on 25 Sep 2026 at $0 cost. Free providers can be busy even when your daily quota remains. Paid endpoints are blocked.</div>
+        </Field>
+        <Field label="OpenRouter API key">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type={showApiKey ? 'text' : 'password'} autoComplete="off" spellCheck={false}
+              value={p.ai.apiKey} placeholder="sk-or-v1-…"
+              onChange={(e) => { setAI('apiKey', e.target.value); setConnectionTest({ busy: false, msg: '', err: '' }); }}
+            />
+            <button className="ghost" type="button" aria-label={showApiKey ? 'Hide API key' : 'Show API key'} onClick={() => setShowApiKey((visible) => !visible)}>
+              {showApiKey ? 'Hide' : 'Show'}
+            </button>
           </div>
-        )}
-        {p.ai.provider === 'gemini' && (
-          <Field label="Gemini API key">
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                autoComplete="off"
-                spellCheck={false}
-                value={p.ai.apiKey}
-                placeholder="Paste your AI Studio key"
-                onChange={(e) => setAI('apiKey', e.target.value)}
-              />
-              <button
-                className="ghost"
-                type="button"
-                aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
-                onClick={() => setShowApiKey((visible) => !visible)}
-              >
-                {showApiKey ? 'Hide' : 'Show'}
-              </button>
-            </div>
-            <div className="help">
-              Get a free key at{' '}
-              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
-                aistudio.google.com/apikey
-              </a>
-              . Free tier is rate-limited but fine for personal use.
-            </div>
-          </Field>
-        )}
-        {p.ai.provider === 'proxy' && (
-          <>
-            <Field label="Account">
-              {authUser ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span className="saved">
-                    Signed in{authUser.email ? ` as ${authUser.email}` : ''}
-                  </span>
-                  <button className="ghost" disabled={authBusy} onClick={doSignOut}>
-                    Sign out
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <button className="primary" disabled={authBusy} onClick={doSignIn}>
-                    {authBusy ? 'Signing in…' : 'Sign in with Google'}
-                  </button>
-                  {authErr && <span className="warn">{authErr}</span>}
-                </div>
-              )}
-              <div className="help">
-                The managed AI is free up to a daily limit per account. Sign in so your usage is
-                counted to you — no card, no key.
-              </div>
-            </Field>
-            <Field label="Proxy URL">
-              <input
-                value={p.ai.proxyUrl}
-                placeholder="https://job-autofill-proxy-xxxx-uc.a.run.app/generate"
-                onChange={(e) => setAI('proxyUrl', e.target.value)}
-              />
-            </Field>
-            <Field label="Admin token (optional)">
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  type={showProxyToken ? 'text' : 'password'}
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={p.ai.proxyToken}
-                  placeholder="Only the proxy owner needs this — bypasses sign-in & quota"
-                  onChange={(e) => setAI('proxyToken', e.target.value)}
-                />
-                <button
-                  className="ghost"
-                  type="button"
-                  aria-label={showProxyToken ? 'Hide admin token' : 'Show admin token'}
-                  onClick={() => setShowProxyToken((visible) => !visible)}
-                >
-                  {showProxyToken ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <div className="help">
-                Leave blank for normal use. If you deployed the proxy yourself (see the{' '}
-                <code>server/</code> folder), paste its <code>PROXY_TOKEN</code> to bypass sign-in
-                and the daily limit. Stays on this device.
-              </div>
-            </Field>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button className="primary" disabled={proxyTest.busy} onClick={testProxy}>
-                {proxyTest.busy ? 'Testing…' : 'Test proxy'}
-              </button>
-              {proxyTest.msg && <span className="saved">{proxyTest.msg}</span>}
-              {proxyTest.err && <span className="warn">{proxyTest.err}</span>}
-            </div>
-          </>
-        )}
+          <div className="help">
+            Create a key at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">openrouter.ai/settings/keys</a>.
+            {' '}Free models have daily and per-minute limits. AI runs only when you request it.
+          </div>
+        </Field>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button className="primary" disabled={connectionTest.busy || !p.ai.apiKey.trim()} onClick={testConnection}>
+            {connectionTest.busy ? 'Testing…' : 'Test OpenRouter connection'}
+          </button>
+          {connectionTest.msg && <span className="saved" role="status">{connectionTest.msg}</span>}
+          {connectionTest.err && <span className="warn" role="alert">{connectionTest.err}</span>}
+        </div>
+        <p className="help">The connection test sends only “Reply with OK” and uses one free-model request.</p>
       </section>
 
       {/* Resume import */}
@@ -392,7 +223,7 @@ function OptionsView({
             disabled={importState.busy}
             onClick={() => importFromResume(p.resumeText)}
           >
-            {importState.busy ? 'Reading with AI…' : '✨ Auto-fill personal, work, education & skills'}
+            {importState.busy ? 'Reading with AI…' : '✨ Auto-fill profile & preferences from CV'}
           </button>
           {undoSnapshot && (
             <button className="ghost" disabled={importState.busy} onClick={undoImport}>
@@ -403,7 +234,7 @@ function OptionsView({
           {importState.err && <span className="warn">{importState.err}</span>}
         </div>
         <div className="help">
-          Uses your AI provider to read the resume and fill the Personal, Work, Education and Skills
+          Uses your AI provider to read the resume and fill the Personal, Work, Education, Skills and Preferences
           sections below. Review the results — it can occasionally misread dates or titles.
         </div>
       </section>
@@ -613,6 +444,7 @@ function OptionsView({
       {/* Preferences */}
       <section className="card">
         <h2>Preferences</h2>
+        <p className="help">Imported when explicitly stated in your CV. Missing facts stay unchanged; you can edit these answers below.</p>
         <div className="row">
           <Field label="Work authorization">
             <input value={p.preferences.workAuthorization} onChange={(e) => setPref('workAuthorization', e.target.value)} />
@@ -625,31 +457,6 @@ function OptionsView({
           <input value={p.preferences.salaryExpectation} onChange={(e) => setPref('salaryExpectation', e.target.value)} />
         </Field>
       </section>
-
-      {/* Cover letter */}
-      <section className="card">
-        <h2>Base cover letter</h2>
-        <Field label="Template — use {{company}}, {{role}}, {{date}}">
-          <textarea
-            style={{ minHeight: 180 }}
-            value={p.baseCoverLetter}
-            onChange={(e) => update((prev) => ({ ...prev, baseCoverLetter: e.target.value }))}
-          />
-        </Field>
-        <div className="help">
-          On a job page, the popup substitutes the company/role/date placeholders.
-        </div>
-      </section>
-
-      <DisabledSites
-        hosts={disabledHosts}
-        onEnable={(host) =>
-          void updateSettings((prev) => ({
-            ...prev,
-            disabledHosts: removeDisabledHost(prev.disabledHosts, host),
-          }))
-        }
-      />
 
       <footer className="help" style={{ marginTop: 16, textAlign: 'center' }}>
         Little AI Helper v{chrome.runtime.getManifest().version}

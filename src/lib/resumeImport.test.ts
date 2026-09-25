@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseLooseJson, extractJsonObject, parseResumeJson } from './resumeImport';
+import { parseLooseJson, extractJsonObject, parseResumeJson, mergeResumeProfile } from './resumeImport';
+import { DEFAULT_PROFILE } from './profile';
 
 describe('parseLooseJson', () => {
   it('parses clean JSON', () => {
@@ -63,6 +64,50 @@ describe('extractJsonObject', () => {
 });
 
 describe('parseResumeJson', () => {
+  it('imports the three explicit preferences and keeps salary units and conditions', () => {
+    const preferences = {
+      workAuthorization: 'Hong Kong permanent resident; authorised to work in Hong Kong',
+      requiresSponsorship: 'No',
+      salaryExpectation: 'HKD 20,000/month full-time; HKD 80/hour part-time or internship',
+    };
+    const parsed = parseResumeJson(JSON.stringify({ preferences }));
+    expect(parsed.preferences).toEqual(preferences);
+    expect(mergeResumeProfile(structuredClone(DEFAULT_PROFILE), parsed).preferences).toMatchObject(preferences);
+  });
+
+  it('keeps missing preferences absent rather than assuming sponsorship is No', () => {
+    expect(parseResumeJson('{"personal":{"country":"Hong Kong"}}').preferences).toEqual({});
+    expect(parseResumeJson('{"preferences":{"requiresSponsorship":"unknown","salaryExpectation":20000}}').preferences).toEqual({});
+  });
+
+  it('normalizes an explicit boolean false without dropping it', () => {
+    expect(parseResumeJson('{"preferences":{"requiresSponsorship":false}}').preferences.requiresSponsorship).toBe('No');
+    expect(parseResumeJson('{"preferences":{"requiresSponsorship":" yes "}}').preferences.requiresSponsorship).toBe('Yes');
+  });
+
+  it('preserves existing preferences when the new CV has no relevant facts', () => {
+    const current = structuredClone(DEFAULT_PROFILE);
+    current.preferences.salaryExpectation = 'HKD 25,000/month';
+    current.preferences.requiresSponsorship = 'Yes';
+    const merged = mergeResumeProfile(current, parseResumeJson('{"preferences":{"salaryExpectation":""}}'));
+    expect(merged.preferences).toEqual(current.preferences);
+  });
+
+  it('preserves preference edits made while the import was waiting', () => {
+    const startedFrom = structuredClone(DEFAULT_PROFILE);
+    const current = structuredClone(startedFrom);
+    current.preferences.salaryExpectation = 'HKD 30,000/month';
+    const parsed = parseResumeJson('{"preferences":{"salaryExpectation":"HKD 20,000/month","requiresSponsorship":"No"}}');
+    const merged = mergeResumeProfile(current, parsed, startedFrom);
+    expect(merged.preferences.salaryExpectation).toBe('HKD 30,000/month');
+    expect(merged.preferences.requiresSponsorship).toBe('No');
+  });
+
+  it('does not import demographic preferences from the AI response', () => {
+    const parsed = parseResumeJson('{"preferences":{"gender":"Male","ethnicity":"Asian","requiresSponsorship":"No"}}');
+    expect(parsed.preferences).toEqual({ requiresSponsorship: 'No' });
+  });
+
   it('maps a truncated resume response to partial data instead of throwing', () => {
     const raw =
       '{"personal":{"firstName":"Ada","lastName":"Lovelace","email":"ada@x.com"},' +

@@ -158,3 +158,17 @@ button.linklike {
 .signin-text { margin: 0 0 10px; font-size: 13px; color: var(--text); }
 .signin-alt { display: block; margin-top: 8px; font-size: 12px; color: var(--primary); text-align: center; }
 .signedin { color: var(--ok); font-size: 12px; margin: 0 0 12px; }
+/* Whole-form AI progress stays in the side panel, never over the application. */
+.fill-spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid #ffffff60; border-top-color: white; border-radius: 50%; animation: fill-spin .8s linear infinite; vertical-align: -2px; }
+@keyframes fill-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .fill-spinner { animation: none; } }
+.fill-help { font-size: 12px; line-height: 1.45; margin: 10px 0; }
+.fill-progress { padding: 12px; border: 1px solid #d9e1ef; border-radius: 10px; background: #fff; font-size: 13px; overflow-wrap: anywhere; }
+.fill-progress > p { margin: 8px 0; }
+.fill-progress summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.fill-log { margin: 0; padding: 0; list-style: none; max-height: 310px; overflow-y: auto; }
+.fill-log li { border-top: 1px solid #edf0f5; padding: 8px 0; }
+.fill-log li b, .fill-log li span { display: block; }
+.fill-log li span { color: #66758d; margin-top: 3px; }
+.fill-log li[data-status="filled"] b { color: #087c50; }
+.fill-log li[data-status="error"] b { color: #b42318; }

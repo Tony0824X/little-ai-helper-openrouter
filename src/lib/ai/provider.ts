@@ -1,6 +1,4 @@
-// Pluggable AI provider interface. v1 ships Gemini (BYO-key) and an on-device
-// fallback. v2's Cloud Run "managed mode" will add a ProxyProvider implementing
-// this same interface — nothing else in the codebase needs to change.
+// Shared provider contract. This fork routes every AI feature to OpenRouter.
 
 export interface GenerateInput {
   /** High-level instruction / persona for the model. */
@@ -14,10 +12,8 @@ export interface GenerateInput {
   /** Allow the model to "think" before answering (better quality, slower). */
   thinking?: boolean;
   /**
-   * Optional per-request model override. Omitted, the provider uses its default
-   * (the fixed fast model). Only the free-text answer feature sets this to the
-   * user's picked model; internal calls (resume parse, eligibility, tailored
-   * resume) leave it unset so they always run on the fast default.
+   * Optional per-request model override. Omitted, OpenRouter uses the selected
+   * settings model. Overrides must also belong to the curated free-model list.
    */
   model?: string;
 }

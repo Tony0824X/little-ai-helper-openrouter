@@ -1,9 +1,13 @@
+import type { Profile } from '../../lib/profile';
+import type { FillSummary } from './shared';
+
 export interface SiteAdapter {
-  id: 'greenhouse' | 'lever' | 'workday' | 'ashby';
+  id: 'greenhouse' | 'lever' | 'workday' | 'ashby' | 'cafedecoral';
   /** True if this adapter handles the current page. */
   matches(url: URL): boolean;
   /** Best-effort company + role for cover-letter tailoring. */
   getPageInfo(): { company: string; role: string };
+  fill?(profile: Profile): FillSummary;
 }
 
 function titleCaseSlug(slug: string): string {

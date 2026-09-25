@@ -1,15 +1,12 @@
 // Content script: detects the ATS, fills standard fields on demand, and injects
 // an "✨ AI answer" button beside each open-ended question.
 
-// getProfile is for the fill path only, where the whole profile is genuinely
-// needed and the user has just asked for it. The always-on scanner reads
-// ./settings instead — see applySettings below.
-import { getProfile } from '../lib/profile';
-import { getSettings, onSettingsChanged, type Settings } from '../lib/settings';
+// Read profile data only when the user requests a fill.
+import { captureFields } from './formFields';
+import { runAiFill, fillStatus, cancelFill } from './aiFill';
 import { getSavedJobs, onSavedJobsChanged } from '../lib/savedJobs';
-import { hostMatches, isHostDisabled } from '../lib/host';
+import { hostMatches } from '../lib/host';
 import {
-  applyStandardFills,
   findOpenQuestions,
   fillInput,
   needsReplaceConfirm,
@@ -19,6 +16,7 @@ import { greenhouseAdapter } from './adapters/greenhouse';
 import { leverAdapter } from './adapters/lever';
 import { workdayAdapter } from './adapters/workday';
 import { ashbyAdapter } from './adapters/ashby';
+import { cafedecoralAdapter } from './adapters/cafedecoral';
 import type { SiteAdapter } from './adapters/types';
 import { AI_BUTTON_CSS, BUTTON_CLASS } from './aiButtonStyles';
 import { INLINE_ANSWER_ERROR_MAX, clearButtonError, showButtonError } from './buttonError';
@@ -29,18 +27,13 @@ import {
   sendToBackground,
   UNSUPPORTED_REPLY_DELAY_MS,
 } from '../lib/messages';
-import type { AIResult, CapturedJob, ContentMessage, FillResult, PageInfo } from '../lib/messages';
+import type { AIResult, CapturedJob, ContentMessage, PageInfo } from '../lib/messages';
 import {
-  startSponsorshipWatch,
-  setScannerEnabled,
-  setBadgeFeatures,
-  setBadgeIntroSeen,
-  setBadgeCorner,
   getScanText,
   captureJobWhenReady,
 } from './sponsorship';
 
-const ADAPTERS: SiteAdapter[] = [greenhouseAdapter, leverAdapter, workdayAdapter, ashbyAdapter];
+const ADAPTERS: SiteAdapter[] = [greenhouseAdapter, leverAdapter, workdayAdapter, ashbyAdapter, cafedecoralAdapter];
 const adapter = ADAPTERS.find((a) => a.matches(new URL(location.href))) ?? null;
 
 const BUTTON_LABEL = '✨ AI answer';
@@ -88,11 +81,13 @@ chrome.runtime.onMessage.addListener((msg: ContentMessage, _sender, sendResponse
   // PAGE_INFO / PAGE_FILL are answered by whichever frame an adapter matched —
   // the top frame normally, or the ATS's own iframe when a company careers site
   // embeds the application form. See pageMessageRole for the race it resolves.
-  const role = pageMessageRole(adapter !== null, isTopFrame);
+  const genericForm = isTopFrame && captureFields().filter(b => !b.field.blocked).length >= 2;
+  const hasForm = adapter !== null || genericForm;
+  const role = pageMessageRole(hasForm, isTopFrame);
   if (role === 'ignore') return false;
 
   if (msg.type === 'PAGE_INFO') {
-    if (!adapter) {
+    if (!hasForm) {
       // role === 'answer-late': concede "unsupported" only after giving an
       // adapter-matching sub-frame time to answer first.
       setTimeout(
@@ -113,8 +108,8 @@ chrome.runtime.onMessage.addListener((msg: ContentMessage, _sender, sendResponse
     }
     sendResponse({
       supported: true,
-      site: adapter.id,
-      ...adapter.getPageInfo(),
+      site: adapter?.id || 'form',
+      ...(adapter?.getPageInfo() || { company: location.hostname, role: document.title }),
       jobText: getScanText(),
       // Unlike the branch above, an adapter can match in a SUB-frame (embedded
       // ATS) — see the PageInfo docblock for why that frame's own hostname must
@@ -129,22 +124,18 @@ chrome.runtime.onMessage.addListener((msg: ContentMessage, _sender, sendResponse
     // ever be the wrong one — a careers page filling its own newsletter signup
     // while the real form sits in the iframe. Restricting it to one frame also
     // means there are no per-frame summaries to merge.
-    if (!adapter) return false;
-    getProfile()
-      .then((profile) => {
-        const summary = applyStandardFills(profile);
-        injectQuestionButtons();
-        sendResponse({
-          filled: summary.filled,
-          total: summary.total,
-          alreadyFilled: summary.alreadyFilled,
-        } satisfies FillResult);
-      })
-      .catch(() => sendResponse({ filled: 0, total: 0, alreadyFilled: 0 } satisfies FillResult));
+    if (!hasForm) return false;
+    runAiFill(msg.requestId).then(sendResponse).catch(e => sendResponse({ error: (e as Error).message }));
     return true;
   }
+  if (msg.type === 'PAGE_FILL_STATUS' && hasForm) { sendResponse(fillStatus()); return false; }
+  if (msg.type === 'PAGE_FILL_CANCEL' && hasForm) { cancelFill(); sendResponse({ ok: true }); return false; }
   return false;
 });
+
+// The side panel may have probed before this module finished importing.
+// Signal readiness without sending profile data or making an AI request.
+if (isTopFrame || adapter) void chrome.runtime.sendMessage({ type: 'PAGE_READY' }).catch(() => {});
 
 // --- AI answer buttons ---
 // Reconcile the page to exactly one button per open question.
@@ -321,63 +312,4 @@ const recomputeQuestions = (activeId: string | null) =>
 getSavedJobs().then((s) => recomputeQuestions(s.activeId));
 onSavedJobsChanged((s) => recomputeQuestions(s.activeId));
 
-/**
- * Pushes the user's switches into the badge. Shared by the initial read and the
- * change listener so the two can't drift on how the gate is computed.
- *
- * The scanner gate is both the global switch AND this host's per-site opt-out
- * ("⚙ Turn off on this site only" on the badge itself). Top frame only (see the
- * guard below), so location.hostname is always the URL-bar host the user sees,
- * even on a page whose posting text comes from a same-origin iframe.
- */
-function applySettings(settings: Settings): void {
-  setBadgeFeatures({
-    coverLetter: settings.coverLetterEnabled,
-    resume: settings.tailoredResumeEnabled,
-  });
-  setScannerEnabled(
-    settings.scanEnabled && !isHostDisabled(location.hostname, settings.disabledHosts),
-  );
-}
-
-// The content script loads on every page; the scanner is gated by the user's
-// setting. Run it once, in the top frame only, to avoid duplicate badges from
-// re-injection or same-origin iframes.
-const scannerGlobal = window as unknown as { __jafScannerStarted?: boolean };
-if (window.top === window.self && !scannerGlobal.__jafScannerStarted) {
-  scannerGlobal.__jafScannerStarted = true;
-  (async () => {
-    try {
-      // Seed the one-time badge coachmark flag and the user's badge corner before
-      // enabling the scanner, so the first badge render is already correct.
-      const { badgeIntroSeen, badgeCorner } = await chrome.storage.local.get([
-        'badgeIntroSeen',
-        'badgeCorner',
-      ]);
-      setBadgeIntroSeen(Boolean(badgeIntroSeen));
-      setBadgeCorner(badgeCorner);
-      // Read the settings LAST, and apply them with no await in between: the
-      // change listener below is already live by now, so a toggle landing while
-      // this function was awaiting something else would be applied by the
-      // listener and then silently reverted here by the older snapshot. (The
-      // pre-#347 code read the profile first and had the same hazard.)
-      //
-      // Settings only — deliberately NOT getProfile(). These four switches live
-      // in their own storage key precisely so this path (and the change listener
-      // below, which every open tab runs) never pulls the resume and every
-      // uploaded document's text along with them (#347).
-      applySettings(await getSettings());
-    } catch (e) {
-      // A failed storage read (e.g. an extension-update limbo) must not silently
-      // kill the scanner — fall back to defaults, including for the per-site
-      // opt-out: scanEnabled defaults ON in DEFAULT_SETTINGS, so this matches a
-      // fresh install with no disabled hosts. Force the coachmark to "seen" so
-      // a fallback never flashes the intro bubble.
-      console.warn('[Little AI Helper] scanner init failed; starting with defaults', e);
-      setBadgeIntroSeen(true);
-      setScannerEnabled(true);
-    }
-    startSponsorshipWatch();
-  })();
-  onSettingsChanged(applySettings);
-}
+// Eligibility badges and document generators are intentionally not started.

@@ -1,0 +1,88 @@
+{
+  "model": "dots-studio/dots-3-note-preview:free",
+  "checked_at": "2026-09-25T03:15:51Z",
+  "synthetic_data_only": true,
+  "price_ceiling": {
+    "prompt": 0,
+    "completion": 0,
+    "request": 0
+  },
+  "connection": {
+    "status": 200,
+    "reply": "OK",
+    "usage": {
+      "prompt_tokens": 25,
+      "completion_tokens": 2,
+      "total_tokens": 27,
+      "cost": 0,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0,
+        "upstream_inference_prompt_cost": 0,
+        "upstream_inference_completions_cost": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    }
+  },
+  "json_extraction": {
+    "status": 200,
+    "reply": "{\n  \"fullName\": \"陳大文\",\n  \"email\": \"synthetic@example.com\",\n  \"location\": \"香港\",\n  \"skills\": [\"TypeScript\", \"React\", \"Python\"]\n}",
+    "usage": {
+      "prompt_tokens": 73,
+      "completion_tokens": 43,
+      "total_tokens": 116,
+      "cost": 0,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0,
+        "upstream_inference_prompt_cost": 0,
+        "upstream_inference_completions_cost": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    }
+  },
+  "whole_form_1_4_0": {
+    "checked_date": "2026-09-25",
+    "environment": "Public website HTML loaded in jsdom, real OpenRouter responses, fictional Demo CV. Not a live Chrome end-to-end run.",
+    "sites": [
+      {
+        "site": "sunflower",
+        "fields_in_context": 70,
+        "visible_fields": 70,
+        "values_entered_and_retained": 28
+      },
+      {
+        "site": "ntk",
+        "fields_in_context": 114,
+        "visible_fields": 13,
+        "values_entered_and_retained": 7
+      }
+    ],
+    "lee_and_poon": "Skipped: HTTP 403 and browser security verification page",
+    "api_integration_tests": {
+      "passed": 2,
+      "skipped": 1
+    },
+    "limits": "Counts verify DOM retention, not factual correctness. Browser widgets and server postbacks need live Chrome validation. No application submitted."
+  }
+}

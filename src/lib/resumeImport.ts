@@ -1,4 +1,7 @@
-import type { EducationEntry, PersonalInfo, WorkEntry } from './profile';
+import type { EducationEntry, PersonalInfo, Preferences, Profile, WorkEntry } from './profile';
+
+type ResumePreferences = Pick<Preferences, 'workAuthorization' | 'requiresSponsorship' | 'salaryExpectation'>;
+const preferenceKeys: (keyof ResumePreferences)[] = ['workAuthorization', 'requiresSponsorship', 'salaryExpectation'];
 
 export interface ParsedResume {
   /** Only fields the AI actually found; merge over existing values. */
@@ -6,6 +9,7 @@ export interface ParsedResume {
   work: WorkEntry[];
   education: EducationEntry[];
   skills: string[];
+  preferences: Partial<ResumePreferences>;
 }
 
 function str(v: unknown): string {
@@ -19,7 +23,6 @@ function str(v: unknown): string {
 export function parseResumeJson(raw: string): ParsedResume {
   const data = parseLooseJson(raw);
   if (data === null) {
-    console.warn('[resume import] unparseable AI response (first 400 chars):', raw.slice(0, 400));
     throw new Error('Could not parse the AI response as JSON. Try again.');
   }
 
@@ -28,6 +31,7 @@ export function parseResumeJson(raw: string): ParsedResume {
   const workIn = Array.isArray(obj.work) ? obj.work : [];
   const eduIn = Array.isArray(obj.education) ? obj.education : [];
   const skillsIn = Array.isArray(obj.skills) ? obj.skills : [];
+  const preferencesIn = (obj.preferences ?? {}) as Record<string, unknown>;
 
   // Keep only non-empty personal fields so we never clobber existing data.
   const personalKeys: (keyof PersonalInfo)[] = [
@@ -67,7 +71,38 @@ export function parseResumeJson(raw: string): ParsedResume {
 
   const skills = skillsIn.map(str).filter(Boolean);
 
-  return { personal, work, education, skills };
+  const preferences: Partial<ResumePreferences> = {};
+  for (const key of preferenceKeys) {
+    const rawValue = preferencesIn[key];
+    let value = str(rawValue);
+    if (key === 'requiresSponsorship') {
+      // A stated false is No, while missing/unknown must remain absent.
+      if (rawValue === true || /^yes$/i.test(value)) value = 'Yes';
+      else if (rawValue === false || /^no$/i.test(value)) value = 'No';
+      else value = '';
+    }
+    if (value) preferences[key] = value;
+  }
+
+  return { personal, work, education, skills, preferences };
+}
+
+/** Missing facts never clear preferences; edits made during the AI request win. */
+export function mergeResumeProfile(current: Profile, parsed: ParsedResume, startedFrom: Profile = current): Profile {
+  const preferences = { ...current.preferences };
+  for (const key of preferenceKeys) {
+    if (parsed.preferences[key] && current.preferences[key] === startedFrom.preferences[key]) {
+      preferences[key] = parsed.preferences[key];
+    }
+  }
+  return {
+    ...current,
+    personal: { ...current.personal, ...parsed.personal },
+    workHistory: parsed.work.length ? parsed.work : current.workHistory,
+    education: parsed.education.length ? parsed.education : current.education,
+    skills: parsed.skills.length ? parsed.skills : current.skills,
+    preferences,
+  };
 }
 
 /**

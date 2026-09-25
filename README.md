@@ -1,224 +1,92 @@
-# Little AI Helper (Chrome Extension)
+# Little AI Helper — OpenRouter Free
 
-**[Install from the Chrome Web Store](https://chromewebstore.google.com/detail/Little%20AI%20Helper/iibpijacaghdcckphindbaijjgcbaoll)**
+這是 [ritsth/job-autofill-extension](https://github.com/ritsth/job-autofill-extension) 的本機修改版本，保留 MIT 授權。
+上游基準 commit：`b0836ef4c6b24dfc398cecb5ee13f9334a56391d`。版本：1.4.0。
 
-[![CI](https://github.com/ritsth/job-autofill-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/ritsth/job-autofill-extension/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/ritsth/job-autofill-extension/actions/workflows/codeql.yml/badge.svg)](https://github.com/ritsth/job-autofill-extension/actions/workflows/codeql.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+1.4.0：整份已載入表格的清理 HTML＋所有欄位定義＋CV／個人資料一起送給 LLM，再用回傳 JSON 由本機 JavaScript 填入。包含分組、表格列及其他已載入步驟；修正 HKID 提示誤擋姓名、中文表格標籤與獨立電話國碼。填後重新核對值及格式，對漏答／選單問題最多補填一次。
 
-## Why I built this
+1.3.1：修正履歷匯入漏掉 Preferences，加入工作資格、簽證贊助及期望薪金抽取；缺少資料不會清空既有偏好，等待 AI 期間的新偏好輸入會保留。匯入結果顯示找到的偏好數量。
 
-Applying to new-grad SWE roles means filling the *same* Greenhouse / Lever / Workday /
-Ashby forms dozens of times, re-writing the same "why this company?" answers, and manually
-checking each posting for visa-sponsorship language before wasting time on a dead end.
-Little AI Helper collapses that loop: structured autofill for the boilerplate, an on-page
-AI draft for the open-ended questions, and an instant eligibility badge so I never apply
-somewhere that won't sponsor.
+1.3.0：加入整份表格 AI 填寫、跨網站欄位抽取、選單／單選／多選支援，以及 Loading、停止和 Debug 訊息。
 
-![Little AI Helper demo](docs/demo.gif)
+1.2.4：移除浮動資格提示、資格掃描、求職信／客製履歷產生器及相關設定。
 
-| Eligibility badge on a live posting | Side panel actions |
-| --- | --- |
-| ![Eligibility badge](docs/shot-eligibility.png) | ![Side panel](docs/shot-sidepanel.png) |
-| **Autofilled fields + ✨ AI answers** | **Configurable AI provider (data stays local)** |
-| ![Autofill](docs/shot-autofill.png) | ![Settings](docs/shot-settings.png) |
+1.2.3：修正側邊欄連線／切換分頁後 Fill this page 停用的問題，加入重試、重新載入提示及大家樂基本欄位支援。1.2.2 已移除 Base cover letter 範本編輯區塊。
 
-Auto-fills repetitive job applications on **Greenhouse**, **Lever**, **Workday**, and
-**Ashby** from a structured profile, and uses AI to:
+## 安裝已建置版本
 
-- **Answer open-ended questions** an "✨ AI answer" button appears beside free-text
-  questions; it drafts an answer from your resume + uploaded documents. On Greenhouse,
-  Lever, Workday, and Ashby it's automatic; on any other job site, **save the job** (💾 in
-  the side panel) and the same button lights up next to that application's questions.
-- **Generate a cover letter** from your base template (company / role / date
-  placeholders substituted), downloadable as a `.pdf`.
-- **Flag eligibility at a glance** every covered page is scanned for visa-sponsorship /
-  U.S.-citizenship / security-clearance language and shows a bold **YES / NO** badge
-  in the corner. Drag it by its header to any corner to see what's under it; it
-  remembers where you put it. On **Handshake** the badge also hosts a one-click
-  cover-letter generator (employer/role auto-detected from the posting).
+1. 將 `little-ai-helper-openrouter` 資料夾放在固定位置；載入後不要刪除或移動。
+2. Chrome 網址列輸入 `chrome://extensions/`，開啟右上方「開發人員模式」。
+3. 選擇「載入未封裝項目 / Load unpacked」，選取含有 `manifest.json` 的 `little-ai-helper-openrouter` 資料夾。
+4. 設定頁會開啟。在 **OpenRouter API key** 填入自己的 Key，可於 https://openrouter.ai/settings/keys 建立。
+5. 保留預設 **Dots3-Note Preview — free · recommended**，按 **Test OpenRouter connection**。這會用一個免費模型請求，只傳送測試文字，不傳送履歷。
+6. 等候「Saved」，上載 PDF / DOCX 履歷。插件會先在本機抽取文字，再交由所選 OpenRouter 模型整理個人資料。檢查並修正匯入結果；CV 有明確寫出的 Preferences 亦會匯入。從舊版更新後可按 Auto-fill profile & preferences from CV 重新解析，不必重新選檔。
+7. 開啟 Greenhouse、Lever、Workday、Ashby 或大家樂求職表格，按擴充功能圖示打開側邊欄，選 **Fill this page with AI**。插件讀取完整已載入表格結構、所有欄位定義、選項及職位文字，與 CV／個人資料一起交給 OpenRouter；收到 JSON 答案後由插件 JavaScript 逐欄填入，再核對網站是否保留及接受格式。可展開 Debug messages 檢查結果。提交前自行檢查。
 
-The UI is a **side panel** (stays open while you browse, closes only when you close it).
+## Fill this page 的連線與支援
 
-**AI providers:** Gemini (BYO free key), on-device (Chrome built-in), or a **managed
-proxy** — a small Cloud Run service that relays to **Vertex AI** so you can spend the
-GCP $300 credit (AI Studio's Gemini API is excluded from the credit; Vertex isn't). See
-[`server/README.md`](server/README.md) to deploy it, then pick "Managed proxy" in options.
+- 更新插件後，已開啟的求職分頁也要重新載入。若側邊欄未能連接，會顯示 **Reload job page**；原本把連線失敗當成不支援網站的提示已修正。
+- 側邊欄會短暫重試頁面辨識，頁面程式就緒時重新辨識，並忽略舊分頁的延遲回覆。
+- AI 可處理文字、數字、原生下拉選單、單選、多選及部分自訂 combobox；先讀取選項再配對，連動選單會於填寫時再次確認。
+- 支援常見 ATS 及可辨識的通用表格；自訂 widgets、跨來源 iframe、封閉 Shadow DOM 或多步流程未必全部可處理。讀取當前文件中已載入的所有步驟作上下文，只填目前顯示的步驟。下一步按 Next 後再按 Fill；不會自動翻頁，也不能讀取尚未載入的步驟。
+- 既有文字／選項會盡量保留，AI 等候期間的新輸入也會保留。原生選單的初始預設選項可依 CV 更改。
+- 未知事實會留空；身份證、檔案上載、CAPTCHA 和同意聲明保留手動處理，不會自動送出申請。
+- Debug 區分當前步驟、送出上下文及其他步驟的欄位數；「已檢查」只指值保留及格式，不等於事實審核。顯示每個欄位成功或略過的原因，不顯示 API Key 或完整答案。免費端點超時／限流會直接顯示錯誤，不會靜默改用付費模型。
 
-**Model picker:** for the Gemini and managed-proxy providers, options has a **Model**
-dropdown — choose between Gemini 2.5 Pro (best), 2.5 Flash (default), or 2.5 Flash-Lite.
-The choice applies **only to ✨ AI answers** for open-ended questions; resume parsing and
-the eligibility-badge check always run on the fast default model. The proxy validates the
-requested model against an allowlist server-side.
+## 模型與 API
 
-**Where it runs:** full autofill on **Greenhouse** (`*.greenhouse.io`), **Lever**
-(`jobs.lever.co`), **Workday** (`*.myworkdayjobs.com`, `*.myworkday.com`,
-`*.myworkdaysite.com`), and **Ashby** (`jobs.ashbyhq.com`). The eligibility badge
-runs on **every page** (so no job board is missed): it shows a bold YES / NO / MAYBE
-verdict when the page mentions sponsorship, citizenship, or clearance requirements, and a
-neutral gray "no eligibility info" card otherwise. It stays current on single-page boards
-as you click between postings. Toggle it on/off any time from the side panel ("Scan every
-page for visa/eligibility"), via the badge's own "Turn off on all sites" link, or — if it's
-just one site you'd rather not see it on — "Turn off on this site only" right below it,
-which remembers your choice for that site (and its subdomains) across reloads. Turn a site
-back on from the extension's Options page, under "Sites where the badge is turned off".
-Because it runs everywhere, Chrome shows the "read and change your data on all websites"
-permission.
+已在 2026-09-25 核對官方 Models API 與各模型 Endpoints API：
 
-All your data stays on your machine (`chrome.storage.local`). The AI layer is
-**bring-your-own-key** (default: free Google Gemini) with an on-device fallback —
-nothing is sent to any server we run.
+| 用途 | 模型 ID | Input / Output token 價格 | Context | JSON 輸出 |
+|---|---|---|---|---|
+| 預設（實測成功） | `dots-studio/dots-3-note-preview:free` | 0 / 0 | 512,000 tokens | `response_format: {"type":"json_object"}` |
+| 替代 | `google/gemma-4-31b-it:free` | 0 / 0 | 262,144 tokens | `response_format: {"type":"json_object"}` |
+| 較輕量替代 | `google/gemma-4-26b-a4b-it:free` | 0 / 0 | 262,144 tokens | 同上 |
 
-## Tech
+1.2.1 改以 Dots3-Note Preview 為預設：已用真實 OpenRouter Key 成功測試一般連線與包含繁體中文的合成履歷 JSON 抽取，兩次 HTTP 200、usage.cost 均為 0。Gemma 兩個免費路線當時均回報 Google AI Studio 的共享供應池限流（HTTP 429），而帳戶仍有免費額度。這是當下可用性與簡單格式測試，並非全面回答品質評測；免費端點未來仍可能限流或下架。
 
-TypeScript · React (side panel + options) · Vite + `@crxjs/vite-plugin` · Manifest V3.
+**從 1.2.0 更新：** 在 `chrome://extensions/` 按此插件的重新載入，再刷新設定頁，將 Free model 手動改為 **Dots3-Note Preview**。舊模型選擇與已儲存履歷會保留。
 
-## Develop
+- Endpoint：`POST https://openrouter.ai/api/v1/chat/completions`
+- 驗證：`Authorization: Bearer <你的 OpenRouter Key>`
+- 格式：`model`、`messages`（system/user）、`max_tokens`；以 SSE streaming 接收 `choices[].delta.content`。
+- 履歷解析及整份表格填寫會開啟 JSON mode；一般問答使用文字輸出。預設關閉 reasoning，將輸出額度留給答案。
+- 所有 AI 功能都使用設定頁所選模型，包括履歷解析、整份表格填寫及 AI answer。
+- 僅允許上述免費 model ID，並送出 `provider.max_price = {prompt:0, completion:0, request:0}`。不自動改用付費模型，也沒有啟用付費 PDF 或搜尋插件。
+- 免費額度、供應情況及模型存續由 OpenRouter 決定。429 會分辨已知的共享供應池限流及每日帳戶額度；只有供應池忙碌時，切換模型才可能有幫助。這不是無限量服務。
+- 不需要自架後端或 Google 登入；原作者的 OAuth client、extension key 與 Cloud Run 預設服務已從此版本移除。
 
-```bash
-npm install
-python3 scripts/make-icons.py # regenerates icons from assets/icon-source.png (needs Pillow)
-npm run dev                   # Vite dev server with HMR
+官方來源：
+- https://openrouter.ai/api/v1/models
+- https://openrouter.ai/api/v1/models/dots-studio/dots-3-note-preview:free/endpoints
+- https://openrouter.ai/dots-studio/dots-3-note-preview:free
+- https://openrouter.ai/api/v1/models/google/gemma-4-31b-it:free/endpoints
+- https://openrouter.ai/api/v1/models/google/gemma-4-26b-a4b-it:free/endpoints
+- https://openrouter.ai/google/gemma-4-31b-it:free
+- https://openrouter.ai/docs/api/reference/overview
+- https://openrouter.ai/docs/guides/routing/provider-selection#max-price
+- https://openrouter.ai/docs/api/reference/limits
+
+## 使用範圍與資料
+
+- 支援能選取文字的 PDF；掃描圖片 PDF 沒有 OCR，請先轉成文字 PDF。
+- 「Fill this page with AI」傳送完整表格的清理 HTML（保留文字／分組／表格，移除 script、執行屬性、隱藏 token 及已有輸入值）和全部欄位定義。每 60 個待填欄位一個 AI 請求，每次仍帶完整表格；漏答或選單問題最多再一輪補填。模型回傳 JSON 欄位 ID 和答案，不回傳或執行 AI JavaScript。最多 400 欄位群組、100,000 字元清理 HTML；超限會明確停止，不靜默截斷。AI answer 仍可逐題使用。
+- 已移除浮動資格提示、背景資格掃描、求職信及客製履歷產生器；不會因舊版設定而重新開啟。
+- 個人資料與 API Key 保存在 `chrome.storage.local`。使用 AI 時，相關履歷、額外文件與問題文字會傳到 OpenRouter 及其選用的模型供應商；這並非完全離線。
+- API Key 不會寫入部署檔案，也不會放在 URL 中。上游 Google / proxy 的舊 Key 不會自動轉送到 OpenRouter。
+- 複雜的求職網站控件仍可能需要手動修正；不會自動按最終 Submit。
+
+## 從原始碼建置
+
+使用 Node.js 22.13 以上（本次使用 22.20.0）。
+
+```sh
+npm ci
+npm run lint
+npm test
+npm run build
 ```
 
-Then load it in Chrome:
+在 Chrome 載入 `dist/` 即可。正式版本不需要開發伺服器。`server/` 和舊供應商模組保留作上游參考，沒有接入這個版本的介面或正式 bundle。
 
-1. Go to `chrome://extensions`, enable **Developer mode**.
-2. **Load unpacked** → select the `dist/` folder.
-3. Edits hot-reload. For a production bundle: `npm run build` (also typechecks).
-
-## Testing & CI
-
-```bash
-npm run lint       # ESLint
-npm run typecheck  # tsc --noEmit
-npm test           # Vitest (unit tests for pure helpers)
-npm run build      # typecheck + production build
-```
-
-Every push and PR runs the same four checks in GitHub Actions
-([`ci.yml`](.github/workflows/ci.yml)), plus a [CodeQL](.github/workflows/codeql.yml)
-security/quality scan. `main` is a protected branch (required checks + review), and
-Dependabot keeps npm and GitHub Actions dependencies up to date. See
-[`SECURITY.md`](SECURITY.md) to report a vulnerability.
-
-## Setup (first run)
-
-The options page opens automatically on install. Fill in:
-
-- **AI provider** → Gemini, and paste a free key from
-  [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
-- Your **personal info, work history, skills, and resume** (paste text or upload a
-  PDF/DOCX — text is extracted for AI context).
-- A **base cover letter** using `{{company}}`, `{{role}}`, `{{date}}` placeholders.
-
-## Verify end-to-end
-
-1. Open a real **Greenhouse** (`*.greenhouse.io`), **Lever** (`jobs.lever.co`),
-   **Workday** (`*.myworkdayjobs.com`), or **Ashby** (`jobs.ashbyhq.com`) job
-   application. A **YES/NO eligibility badge** appears top-right automatically.
-2. Click the extension icon → the **side panel** opens (and stays open).
-3. **Fill this page** → standard fields populate.
-4. On a free-text question, click **✨ AI answer** → an editable draft appears.
-5. In the panel → **Generate cover letter** → review/edit → **Download .pdf**.
-6. On a **Handshake** posting, the eligibility badge exposes its own cover-letter
-   generator (employer/role auto-detected).
-
-Edge cases handled: no key set (popup prompts you), unsupported page (popup says so),
-on-device fallback when no key is set and Chrome's built-in model is available.
-
-## Architecture
-
-| Area | Path |
-| --- | --- |
-| Profile schema + storage | `src/lib/profile.ts` |
-| AI providers (pluggable) | `src/lib/ai/` (`gemini.ts`, `onDevice.ts`, `provider.ts`) |
-| Document text extraction | `src/lib/documents.ts` |
-| Cover-letter helpers | `src/lib/coverLetter.ts` |
-| Background AI hub | `src/background/service-worker.ts` |
-| Autofill + question buttons | `src/content/` (`adapters/` per site) |
-| Side panel entry point | `src/sidepanel/` (mounts the `Popup` component from `src/popup/`) |
-| Options UI | `src/options/` |
-
-The `AIProvider` interface is the seam for **v2**: a Cloud Run "managed mode" proxy
-becomes a new `ProxyProvider` with no other code changes. Workday support is a new
-adapter under `src/content/adapters/`.
-
-## Design decisions & tradeoffs
-
-A few choices I'd defend in a code review:
-
-- **Pluggable `AIProvider` interface over hardcoding Gemini.** The AI layer sits behind
-  one interface (`src/lib/ai/provider.ts`), so Gemini, the on-device model, and the Cloud
-  Run proxy are interchangeable. This is what let "managed mode" ship later as a *new
-  provider* with no changes to the call sites — and why adding Groq/OpenRouter is a small,
-  isolated task.
-- **Per-site adapters instead of one generic form-filler.** Greenhouse, Lever, Workday, and
-  Ashby have very different DOMs, so each gets its own adapter under `src/content/adapters/`. A
-  generic heuristic filler would be flakier and harder to debug; isolated adapters mean a
-  Workday breakage can't regress Greenhouse.
-- **Vertex AI behind a Cloud Run proxy, not the AI Studio API directly.** The GCP $300
-  credit excludes AI Studio's Gemini API but covers Vertex — so the managed proxy relays to
-  Vertex to keep it free to run, and keeps any key *off* the client.
-- **Authenticated, metered proxy over a shared secret.** A published extension can't ship a
-  secret, and an open proxy would let one user drain the credit. Users sign in with Google
-  (`chrome.identity`) and the proxy meters each one against a per-user daily Firestore
-  quota — so the service is safe to publish.
-- **Client-side data by default (`chrome.storage.local`).** Resume and history are
-  sensitive; keeping them on-device with a bring-your-own-key default means there's nothing
-  on a server I run to leak, and the extension works with no backend at all.
-
-## Roadmap
-
-Shipped since v1: Cloud Run → Vertex AI managed proxy with **Google sign-in +
-per-user daily quotas**, Workday adapter, Handshake eligibility badge +
-cover-letter generator, tailored-resume generator, save-job context, PDF export,
-CI/CodeQL + branch protection, and a proxy security-hardening pass (locked-down
-CORS, sanitized error responses, Secret Manager for the admin token).
-
-Still ahead (v2+):
-
-- Multi-provider picker (Groq / OpenRouter / Claude) — interface already supports it.
-
-### Publishing & the managed proxy
-
-The managed proxy is safe to publish because it **identifies and meters each user**:
-
-- Users **sign in with Google** (`chrome.identity`); the extension sends their Google
-  token to the proxy, which verifies it and counts the call against a **per-user daily
-  limit** in Firestore (`DAILY_LIMIT`, default 50/day). One user can't drain your Vertex
-  credit, and no secret is shipped in the extension. See [`server/README.md`](server/README.md)
-  for the OAuth-client + Firestore setup.
-- The proxy owner can still set an **admin token** in Options (the shared `PROXY_TOKEN`)
-  to bypass sign-in and the quota for their own testing.
-- **Bring-your-own** remains available for anyone who'd rather not sign in: paste a free
-  **Gemini** key, deploy their own proxy, or use the **on-device** model.
-
-Publishing checklist for the proxy: set a stable extension `key` in `manifest.config.ts`,
-create a Chrome-Extension **OAuth client** bound to that ID and put it in `oauth2.client_id`,
-and deploy the server with `OAUTH_CLIENT_ID` + `DAILY_LIMIT`.
-
-## What I learned
-
-- **Designing for an unknown future provider paid off.** Committing to the `AIProvider`
-  seam early felt like over-engineering for a v1 — but it's exactly what made the managed
-  proxy and on-device fallback drop in cleanly later. Good seams beat premature features.
-- **The hard part of a Chrome extension is the DOM, not the AI.** Job boards use dynamic,
-  single-page navigation and inconsistent markup; most of the real engineering went into
-  robust per-site adapters and self-gating content scripts that stay correct as the user
-  clicks between postings — not into the model calls.
-- **Cost and abuse are design constraints, not afterthoughts.** "How do I publish this
-  without one user burning my GCP credit?" forced the auth + Firestore-quota design.
-  Thinking about metering up front changed the architecture.
-- **Manifest V3 permissions are a UX tradeoff.** The eligibility badge needs to run
-  everywhere, which triggers Chrome's "read and change your data on all websites" prompt —
-  so it ships with visible off-switches (the side-panel toggle and a "Turn off on all
-  sites" link on the badge itself) to keep user trust.
-
-## Contributing
-
-Issues and pull requests are welcome — see the [good first issues](https://github.com/ritsth/job-autofill-extension/labels/good%20first%20issue) to get started, and read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pre-PR checklist. Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
-
-## License
-
-Released under the [MIT License](LICENSE).
+上游原始文件保留於 `README.upstream.md`、`PRIVACY.upstream.md`。本版本資料處理方式以 `PRIVACY.md` 為準。

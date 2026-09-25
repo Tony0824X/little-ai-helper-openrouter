@@ -2,9 +2,11 @@
 // background service worker. Background handles the AI_* messages (it owns the
 // network + key). Content scripts handle the PAGE_* messages (they own the DOM).
 
+import type { FormField, FormDocument } from './formPlan';
+
 export interface PageInfo {
   supported: boolean;
-  site: 'greenhouse' | 'lever' | 'workday' | 'ashby' | null;
+  site: 'greenhouse' | 'lever' | 'workday' | 'ashby' | 'cafedecoral' | 'form' | null;
   company: string;
   role: string;
   /** Scoped job-posting text, used to tailor AI answers + the cover letter. */
@@ -61,6 +63,7 @@ export interface AnalyzeJobMsg {
 // --- Content-handled (DOM, sent to a specific tab) ---
 export interface FillPageMsg {
   type: 'PAGE_FILL';
+  requestId: string;
 }
 export interface GetPageInfoMsg {
   type: 'PAGE_INFO';
@@ -79,12 +82,13 @@ export interface CapturedJob {
 }
 
 export type BackgroundMessage =
+  | { type: 'AI_FILL_FORM'; fields: FormField[]; jobText: string; document?: FormDocument; targetIds?: string[] }
   | GenerateAnswerMsg
   | GenerateCoverLetterMsg
   | GenerateResumeMsg
   | ParseResumeMsg
   | AnalyzeJobMsg;
-export type ContentMessage = FillPageMsg | GetPageInfoMsg | CaptureJobMsg;
+export type ContentMessage = FillPageMsg | GetPageInfoMsg | CaptureJobMsg | { type: 'PAGE_FILL_STATUS' } | { type: 'PAGE_FILL_CANCEL' };
 export type AnyMessage = BackgroundMessage | ContentMessage;
 
 export interface AIResult {

@@ -31,7 +31,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  scanEnabled: true,
+  scanEnabled: false,
   disabledHosts: [],
   tailoredResumeEnabled: true,
   coverLetterEnabled: true,
